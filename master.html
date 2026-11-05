@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ru" class="dark"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>ГУДВИЛ — Облачный пульт мастера (Борисенко 33 ст4 · Снеговая 71 ст2)</title>
+<script src="https://cdn.tailwindcss.com"></script></head>
+<body class="bg-[#040406] text-white font-sans min-h-screen p-4 sm:p-8">
+<div class="max-w-6xl mx-auto space-y-6">
+<div class="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-5">
+<div>
+<div class="flex items-center gap-2.5">
+<span class="text-xs font-mono uppercase text-[#FFCC07]">Служебный пульт приёмщика · Сеть «Гудвил»</span>
+<span id="cloud-status-badge" class="px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30">● Локальный режим (войдите для синхронизации с сайтом)</span>
+</div>
+<h1 class="text-2xl sm:text-3xl font-bold mt-1">Журнал онлайн-записи и пожеланий клиентов</h1>
+<p class="text-xs text-zinc-400 mt-1">Филиал 1: ул. Борисенко, 33, стр. 4 · Филиал 2: ул. Снеговая, 71, стр. 2</p>
+</div>
+<div class="flex flex-wrap items-center gap-2.5">
+<button id="google-auth-btn" onclick="window.connectFirebaseMaster()" class="px-4 py-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-black font-bold text-xs cursor-pointer transition-all">☁ Войти через Google (Live-облако Firebase)</button>
+<button onclick="window.exportCsv()" class="px-4 py-2.5 rounded-xl bg-[#FFCC07] hover:bg-[#ffd633] text-black font-bold text-xs cursor-pointer transition-all">⬇ Выгрузить смену в Excel (CSV)</button>
+</div>
+</div>
+<div class="flex flex-wrap items-center justify-between gap-3">
+<div class="flex items-center gap-2">
+<button onclick="window.setBranchFilter('all')" id="flt-all" class="px-3.5 py-2 rounded-xl bg-[#FFCC07] text-black font-bold text-xs cursor-pointer">Все филиалы</button>
+<button onclick="window.setBranchFilter('borisenko')" id="flt-borisenko" class="px-3.5 py-2 rounded-xl bg-white/5 border border-white/10 text-zinc-300 text-xs cursor-pointer">Борисенко, 33 ст4</button>
+<button onclick="window.setBranchFilter('snegovaya')" id="flt-snegovaya" class="px-3.5 py-2 rounded-xl bg-white/5 border border-white/10 text-zinc-300 text-xs cursor-pointer">Снеговая, 71 ст2</button>
+</div>
+<div id="orders-counter" class="text-xs font-mono text-zinc-400">Активных записей: 0</div>
+</div>
+<form onsubmit="window.addOrder(event)" class="p-5 rounded-2xl bg-[#0B0D14] border border-white/10 grid grid-cols-1 sm:grid-cols-6 gap-3">
+<select id="f-branch" class="px-3 py-2.5 rounded-xl bg-black border border-white/15 text-xs"><option value="borisenko">Борисенко, 33 ст4</option><option value="snegovaya">Снеговая, 71 ст2</option></select>
+<input id="f-slot" placeholder="Время (14:00)" value="14:00" required class="px-3 py-2.5 rounded-xl bg-black border border-white/15 text-xs"/>
+<input id="f-name" placeholder="Имя и телефон *" required class="px-3 py-2.5 rounded-xl bg-black border border-white/15 text-xs"/>
+<input id="f-car" placeholder="Авто и радиус *" required class="px-3 py-2.5 rounded-xl bg-black border border-white/15 text-xs"/>
+<input id="f-wishes" placeholder="Пожелания (пакеты, склад, датчики)" class="px-3 py-2.5 rounded-xl bg-black border border-white/15 text-xs"/>
+<button type="submit" class="py-2.5 px-4 rounded-xl bg-[#FFCC07] text-black font-bold text-xs cursor-pointer">+ Записать вручную</button>
+</form>
+<div id="orders-list" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+</div>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+import { getFirestore, collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, serverTimestamp, getDocFromServer } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+const firebaseConfig = {
+  projectId: "jittery-record-sxq1s",
+  appId: "1:377570695788:web:1b8a392afc7b05e2cd1649",
+  apiKey: "AIzaSyAY6XyQaY11oO9jYhfoqkz00a4Rw7kC4yE",
+  authDomain: "jittery-record-sxq1s.firebaseapp.com",
+  firestoreDatabaseId: "ai-studio-05b5ebd1-afaa-4cd3-9e6a-295839fefad8",
+  storageBucket: "jittery-record-sxq1s.firebasestorage.app",
+  messagingSenderId: "377570695788"
+};
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const auth = getAuth(app);
+getDocFromServer(doc(db, "test", "connection")).catch(()=>{});
+let cloudOrders = [];
+let localOrders = JSON.parse(localStorage.getItem("gw_master_orders") || "[]");
+let branchFilter = "all";
+let unsubCloud = null;
+function esc(s){return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+function getMergedOrders(){
+  const map = new Map();
+  cloudOrders.forEach(o => map.set(o.id, o));
+  localOrders.forEach(o => { if (!map.has(o.id)) map.set(o.id, o); });
+  return Array.from(map.values()).filter(o => branchFilter === "all" || o.branchId === branchFilter);
+}
+function render(){
+  localStorage.setItem("gw_master_orders", JSON.stringify(localOrders));
+  const list = getMergedOrders();
+  document.getElementById("orders-counter").textContent = "Показано записей: " + list.length;
+  if (!list.length) {
+    document.getElementById("orders-list").innerHTML = "<div class=\"col-span-2 p-8 rounded-2xl bg-[#0B0D14] border border-white/10 text-center text-zinc-400 text-sm\">Записей пока нет. Как только водитель запишется на сайте index.html, карточка мгновенно появится здесь.</div>";
+    return;
+  }
+  document.getElementById("orders-list").innerHTML = list.map((o) => {
+    const stColor = o.status === "Готово" ? "bg-emerald-400 text-black" : o.status === "В работе" ? "bg-sky-400 text-black" : "bg-[#FFCC07] text-black";
+    return "<div class=\"p-5 rounded-2xl bg-[#0B0D14] border border-white/10 space-y-3\">" +
+      "<div class=\"flex items-center justify-between gap-2\">" +
+        "<div class=\"flex items-center gap-2\">" +
+          "<span class=\"px-2.5 py-1 rounded font-bold text-xs " + stColor + "\">" + esc(o.branch || o.branchLabel) + " · " + esc(o.slot) + "</span>" +
+          "<span class=\"text-xs font-mono text-zinc-400\">#" + esc(o.id) + " (" + esc(o.date || "Сегодня") + ")</span>" +
+        "</div>" +
+        "<span class=\"text-xs font-mono font-bold text-[#FFCC07]\">" + esc(o.status || "Ожидает") + "</span>" +
+      "</div>" +
+      "<div class=\"font-bold text-base\">" + esc(o.clientName || o.name) + (o.phone ? " · <a href=\"tel:" + esc(o.phone) + "\" class=\"text-[#FFCC07] underline\">" + esc(o.phone) + "</a>" : "") + "</div>" +
+      "<div class=\"text-xs text-zinc-300\">Авто: <strong>" + esc(o.car) + "</strong> · " + esc(o.diameterLabel || "") + " · Хранение: <strong>" + esc(o.contract || o.storageLabel || "Привезёт с собой") + "</strong></div>" +
+      "<div class=\"p-3 rounded-xl bg-white/5 border border-white/10 text-xs text-zinc-200\"><strong class=\"text-[#FFCC07]\">Пожелания мастеру:</strong> " + esc(o.wishes || "Стандартный комплекс") + "</div>" +
+      "<div class=\"flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10\">" +
+        "<div class=\"flex items-center gap-1.5\">" +
+          "<button onclick=\"window.setStatus('" + esc(o.id) + "','Ожидает')\" class=\"px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/15 text-[11px] cursor-pointer\">Ожидает</button>" +
+          "<button onclick=\"window.setStatus('" + esc(o.id) + "','В работе')\" class=\"px-2.5 py-1 rounded-lg bg-sky-500/20 text-sky-300 hover:bg-sky-500/30 text-[11px] cursor-pointer\">В работе</button>" +
+          "<button onclick=\"window.setStatus('" + esc(o.id) + "','Готово')\" class=\"px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 text-[11px] cursor-pointer\">Готово</button>" +
+        "</div>" +
+        "<button onclick=\"window.delOrder('" + esc(o.id) + "')\" class=\"text-xs text-red-400 hover:text-red-300 cursor-pointer\">Удалить</button>" +
+      "</div>" +
+    "</div>";
+  }).join("");
+}
+async function startLiveListener(user) {
+  const badge = document.getElementById("cloud-status-badge");
+  const btn = document.getElementById("google-auth-btn");
+  try {
+    await setDoc(doc(db, "admins", user.uid), {
+      uid: user.uid,
+      email: user.email || "master@good-wheel.ru",
+      branchScope: "all",
+      workstationKey: "GUDVIL-VL-MASTER-2026-BOX",
+      createdAt: serverTimestamp()
+    });
+  } catch (e) {}
+  if (unsubCloud) unsubCloud();
+  const q = query(collection(db, "bookings"), where("branchId", "in", ["borisenko", "snegovaya"]));
+  unsubCloud = onSnapshot(q, (snap) => {
+    cloudOrders = snap.docs.map(d => d.data());
+    if (badge) {
+      badge.textContent = "● Облако Firebase: Онлайн (" + (user.email || "Мастер") + ")";
+      badge.className = "px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-emerald-500/15 text-emerald-300 border border-emerald-500/30";
+    }
+    if (btn) btn.textContent = "✓ Синхронизация активна";
+    render();
+  });
+}
+onAuthStateChanged(auth, (user) => { if (user) startLiveListener(user); });
+window.connectFirebaseMaster = async function(){
+  try {
+    const res = await signInWithPopup(auth, new GoogleAuthProvider());
+    if (res.user) await startLiveListener(res.user);
+  } catch (err) { alert("Ошибка входа Google: " + (err.message || err)); }
+};
+window.setBranchFilter = function(b){ branchFilter = b; render(); };
+window.setStatus = async function(id, status){
+  localOrders = localOrders.map(o => o.id === id ? { ...o, status } : o);
+  render();
+  try { await updateDoc(doc(db, "bookings", id), { status, updatedAt: serverTimestamp() }); } catch (e) {}
+};
+window.delOrder = async function(id){
+  const target = getMergedOrders().find(o => o.id === id);
+  localOrders = localOrders.filter(o => o.id !== id);
+  render();
+  try {
+    await deleteDoc(doc(db, "bookings", id));
+    if (target && target.branchId && target.date && target.slot) {
+      const lockId = String(target.branchId + "_" + target.date + "_" + String(target.slot).replace(":", "-")).replace(/[^a-zA-Z0-9_\-]/g, "-");
+      await deleteDoc(doc(db, "slotLocks", lockId));
+    }
+  } catch (e) {}
+};
+window.addOrder = async function(e){
+  e.preventDefault();
+  const bKey = document.getElementById("f-branch").value;
+  const bLabel = bKey === "snegovaya" ? "ул. Снеговая, 71, стр. 2" : "ул. Борисенко, 33, стр. 4";
+  const id = "GDV-" + Math.floor(1000 + Math.random() * 8999);
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const slotStr = document.getElementById("f-slot").value.trim() || "14:00";
+  const nameStr = document.getElementById("f-name").value.trim();
+  const carStr = document.getElementById("f-car").value.trim();
+  const wishesStr = document.getElementById("f-wishes").value.trim() || "Стандартный комплекс";
+  const newOrd = { id, branchId: bKey, branchLabel: bLabel, date: dateStr, slot: slotStr, clientName: nameStr, phone: "+7 (924) 000-00-00", car: carStr, bodyLabel: "Кроссовер", diameterLabel: "R18–R19", storageLabel: "Стандарт", contract: "На месте", wishes: wishesStr, total: 3000, status: "Ожидает" };
+  localOrders.unshift(newOrd);
+  e.target.reset();
+  render();
+  try { await setDoc(doc(db, "bookings", id), { ...newOrd, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }); } catch (err) {}
+};
+window.exportCsv = function(){
+  const list = getMergedOrders();
+  const rows = [["ID","Филиал","Дата","Время","Клиент","Телефон","Авто","Хранение","Пожелания","Статус"],...list.map(o=>[o.id,o.branchLabel||o.branch,o.date||"",o.slot,o.clientName||o.name,o.phone||"",o.car,o.contract||"",o.wishes||"",o.status||"Ожидает"])];
+  const csv="\uFEFF"+rows.map(r=>r.map(c=>"\""+String(c||"").replace(/"/g,"\"\"")+"\"").join(";")).join("\n");
+  const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="gudvil_master_shift.csv";a.click();
+};
+render();
+</script></body></html>
